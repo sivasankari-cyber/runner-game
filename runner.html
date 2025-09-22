@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mini Runner — Installable Web App</title>
+
+  <!-- PWA manifest -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0ea5a4"/>
+
+  <style>
+    :root{
+      --bg: linear-gradient(to top, #6dd5ed, #ffffff);
+      --ui: #0ea5a4;
+      --panel: rgba(255,255,255,0.9);
+      --font: "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    html,body{height:100%;margin:0;font-family:var(--font)}
+    body{background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+    #gameWrapper{width:100%;max-width:900px;height:640px;background:linear-gradient(#cfeef7,#f6fbff);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.15);position:relative;overflow:hidden}
+    canvas{display:block;width:100%;height:100%}
+    .ui{
+      position:absolute;left:12px;top:12px;padding:8px 12px;background:var(--panel);border-radius:10px;backdrop-filter: blur(4px);
+    }
+    .score{font-weight:700;font-size:18px;color:#073642}
+    .controls{position:absolute;right:12px;top:12px;display:flex;gap:8px}
+    button.small{background:var(--ui);border:none;color:white;padding:8px 10px;border-radius:8px;font-weight:600;cursor:pointer}
+    /* overlay screens */
+    .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:linear-gradient(rgba(255,255,255,0.85),rgba(255,255,255,0.65));backdrop-filter: blur(4px)}
+    .panel{background:white;padding:18px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.12);text-align:center;max-width:80%}
+    h1{margin:0;font-size:26px;color:#073642}
+    p{margin:6px 0;color:#334155}
+    .big-btn{padding:12px 22px;font-size:16px;border-radius:10px;background:var(--ui);color:#fff;border:none;cursor:pointer;font-weight:700}
+    .small-note{font-size:13px;color:#475569}
+    /* touch controls shown on mobile */
+    #touchControls{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:12px}
+    .touch-btn{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,0.8);display:flex;align-items:center;justify-content:center;font-weight:700;box-shadow:0 6px 14px rgba(0,0,0,0.12);user-select:none}
+    footer{font-size:13px;color:#0f172a;margin-top:10px}
+    @media (max-width:480px){
+      #gameWrapper{height:70vh;border-radius:10px}
+      h1{font-size:20px}
+    }
+  </style>
+</head>
+<body>
+  <div id="gameWrapper">
+    <canvas id="game"></canvas>
+
+    <div class="ui">
+      <div class="score" id="score">Score: 0</div>
+    </div>
+
+    <div class="controls">
+      <button class="small" id="pauseBtn">Pause</button>
+      <button class="small" id="installBtn" style="display:none">Install</button>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="startOverlay" class="overlay">
+      <div class="panel">
+        <h1>Mini Runner</h1>
+        <p>Run along 3 lanes, collect coins, dodge obstacles. Space / ↑ = jump. ← → to switch lanes. Tap to play on mobile.</p>
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:12px">
+          <button class="big-btn" id="startBtn">Start Game</button>
+          <button class="big-btn" id="tutorialBtn" style="background:#475569">How to Play</button>
+        </div>
+        <p class="small-note">Open in browser, or install as an app (Chrome / Edge / Android). Run with Live Server in VS Code for best results.</p>
+      </div>
+    </div>
+
+    <!-- Game Over -->
+    <div id="gameOverOverlay" class="overlay" style="display:none">
+      <div class="panel">
+        <h1 id="goTitle">Game Over</h1>
+        <p id="goScore">Score: 0</p>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:12px">
+          <button class="big-btn" id="restartBtn">Play Again</button>
+          <button class="big-btn" id="shareBtn" style="background:#475569">Share</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- touch controls -->
+    <div id="touchControls" style="display:none">
+      <div class="touch-btn" id="leftBtn">◀</div>
+      <div class="touch-btn" id="jumpBtn">▲</div>
+      <div class="touch-btn" id="rightBtn">▶</div>
+    </div>
+  </div>
+
+  <footer>Tip: Press Space to jump. Use Live Server to run. </footer>
+
+<script>
+/* Simple endless runner with 3 lanes, coins, obstacles. Mobile touch & swipe included. */
+
+// canvas setup
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function fitCanvas(){
+  const wrapper = document.getElementById('gameWrapper');
+  const rect = wrapper.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// game state
+let lanes = 3;
+let laneWidth;
+let groundY;
+let playing = false;
+let gameOver = false;
+let score = 0;
+let speed = 6;
+let spawnTimer = 0;
+const obstacles = [];
+const coins = [];
+const effects = [];
+
+// player
+const player = {
+  lane: 1, // 0..2
+  x: 0,
+  y: 0,
+  width: 56,
+  height: 56,
+  vy: 0,
+  gravity: 1.2,
+  jumpPower: -16,
+  onGround: true,
+  color: '#0b69ff'
+};
+
+function resetGame(){
+  obstacles.length = 0;
+  coins.length = 0;
+  effects.length = 0;
+  score = 0;
+  speed = 6;
+  spawnTimer = 0;
+  player.lane = 1;
+  player.vy = 0;
+  player.onGround = true;
+  gameOver = false;
+  updateUiScore();
+}
+
+// layout calc
+function layout(){
+  laneWidth = canvas.width / devicePixelRatio / lanes;
+  groundY = canvas.height / devicePixelRatio - 100;
+  player.x = laneCenter(player.lane) - player.width/2;
+  player.y = groundY - player.height;
+}
+layout();
+window.addEventListener('resize', ()=>{layout(); fitCanvas();});
+
+// helpers
+function laneCenter(l){ return l * laneWidth + laneWidth/2; }
+function rnd(min,max){ return Math.random()*(max-min)+min; }
+
+// spawn obstacles & coins
+function spawnLogic(){
+  spawnTimer -= 1;
+  if(spawnTimer <= 0){
+    // choose obstacle or coin
+    const choose = Math.random();
+    if(choose < 0.6){
+      // obstacle
+      obstacles.push({
+        lane: Math.floor(rnd(0,3)),
+        x: canvas.width / devicePixelRatio + 60,
+        w: 52,
+        h: 52,
+        y: groundY - 52
+      });
+    } else {
+      // coin
+      coins.push({
+        lane: Math.floor(rnd(0,3)),
+        x: canvas.width / devicePixelRatio + 60,
+        r: 14,
+        y: groundY - 120
+      });
+    }
+    spawnTimer = Math.round(rnd(40, 80));
+  }
+}
+
+// update
+function update(){
+  if(!playing || gameOver) return;
+
+  // increase difficulty slowly
+  if(score % 20 === 0 && score !== 0) speed = 6 + Math.floor(score/40);
+
+  // player vertical physics
+  player.y += player.vy;
+  player.vy += player.gravity;
+  if(player.y + player.height >= groundY){
+    player.y = groundY - player.height;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  // smooth horizontal toward lane center
+  const targetX = laneCenter(player.lane) - player.width/2;
+  player.x += (targetX - player.x) * 0.25;
+
+  spawnLogic();
+
+  // move obstacles & coins
+  for(let i = obstacles.length -1; i>=0; i--){
+    obstacles[i].x -= speed;
+    if(obstacles[i].x + obstacles[i].w < -10) { obstacles.splice(i,1); score++; updateUiScore(); }
+    // collision
+    if(collideRect(player.x, player.y, player.width, player.height, obstacles[i].x, obstacles[i].y, obstacles[i].w, obstacles[i].h)) {
+      endGame();
+    }
+  }
+  for(let i = coins.length -1; i>=0; i--){
+    coins[i].x -= speed;
+    if(coins[i].x < -20) coins.splice(i,1);
+    // collect
+    const dx = (player.x + player.width/2) - coins[i].x;
+    const dy = (player.y + player.height/2) - coins[i].y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if(dist < coins[i].r + Math.max(player.width, player.height)/4){
+      score += 5; updateUiScore(); effects.push({x:coins[i].x,y:coins[i].y,age:0}); coins.splice(i,1);
+    }
+  }
+
+  // effects age
+  for(let i=effects.length-1;i>=0;i--){
+    effects[i].age++;
+    if(effects[i].age > 40) effects.splice(i,1);
+  }
+}
+
+// draw
+function draw(){
+  // background
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const W = canvas.width/devicePixelRatio;
+  const H = canvas.height/devicePixelRatio;
+
+  // track ground
+  ctx.fillStyle = '#dbeafe';
+  ctx.fillRect(0, groundY, W, H-groundY);
+
+  // lane lines
+  for(let i=1;i<lanes;i++){
+    const x = i * laneWidth;
+    ctx.strokeStyle = 'rgba(10,10,10,0.06)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8,8]);
+    ctx.beginPath();
+    ctx.moveTo(x, groundY-240);
+    ctx.lineTo(x, groundY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // draw coins
+  for(let c of coins){
+    const cx = c.x;
+    const cy = c.y;
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(cx, cy, c.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#fff4d9';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('¢', cx-5, cy+5);
+  }
+
+  // player shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.beginPath();
+  ctx.ellipse(player.x + player.width/2, groundY + 8, player.width*0.6, 10, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // draw player
+  roundRect(ctx, player.x, player.y, player.width, player.height, 10, player.color);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('U', player.x + player.width/2 - 8, player.y + player.height/2 + 8);
+
+  // draw obstacles
+  ctx.fillStyle = '#ef4444';
+  for(let o of obstacles){
+    roundRect(ctx, o.x, o.y, o.w, o.h, 10, '#ef4444');
+    ctx.fillStyle = '#fff4';
+    ctx.fillRect(o.x+6, o.y+6, 10, o.h-12);
+  }
+
+  // effects
+  ctx.fillStyle = '#10b981';
+  for(let e of effects){
+    ctx.globalAlpha = 1 - e.age/40;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y - e.age*0.4, 8 + e.age*0.1, 0, Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// helpers
+function roundRect(ctx,x,y,w,h,r,fillColor){
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  ctx.fill();
+}
+function collideRect(ax,ay,aw,ah,bx,by,bw,bh){
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+// game loop
+let last = 0;
+function loop(t){
+  requestAnimationFrame(loop);
+  const now = t;
+  const dt = now - last;
+  last = now;
+  update();
+  draw();
+}
+requestAnimationFrame(loop);
+
+// UI and controls
+const startOverlay = document.getElementById('startOverlay');
+const startBtn = document.getElementById('startBtn');
+const tutorialBtn = document.getElementById('tutorialBtn');
+const gameOverOverlay = document.getElementById('gameOverOverlay');
+const goScore = document.getElementById('goScore');
+const restartBtn = document.getElementById('restartBtn');
+const shareBtn = document.getElementById('shareBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const scoreEl = document.getElementById('score');
+const touchControls = document.getElementById('touchControls');
+const leftBtn = document.getElementById('leftBtn');
+const rightBtn = document.getElementById('rightBtn');
+const jumpBtn = document.getElementById('jumpBtn');
+
+function updateUiScore(){ scoreEl.textContent = 'Score: ' + score; }
+
+startBtn.onclick = ()=>{ startGame(); };
+tutorialBtn.onclick = ()=>{ alert('Controls:\\n- Space / Arrow Up: Jump\\n- Left / Right arrows: Change lane\\n- On mobile: use left/right/jump buttons or swipe.'); };
+
+restartBtn.onclick = ()=>{ resetGame(); startGame(); };
+shareBtn.onclick = async ()=>{
+  if(navigator.share){
+    try{ await navigator.share({title:'Mini Runner Score',text:'I scored '+score+' in Mini Runner!'}); }catch(e){}
+  } else { prompt('Copy your score', 'I scored ' + score); }
+};
+
+pauseBtn.onclick = ()=>{ playing = !playing; pauseBtn.textContent = playing ? 'Pause' : 'Resume'; };
+
+// keyboard
+window.addEventListener('keydown', (e)=>{
+  if(!playing) return;
+  if(e.key === ' ' || e.key === 'ArrowUp'){ if(player.onGround){ player.vy = player.jumpPower; player.onGround=false; } }
+  if(e.key === 'ArrowLeft'){ player.lane = Math.max(0, player.lane-1); }
+  if(e.key === 'ArrowRight'){ player.lane = Math.min(lanes-1, player.lane+1); }
+});
+
+// touch buttons
+leftBtn.addEventListener('pointerdown', ()=>{ player.lane = Math.max(0, player.lane-1); });
+rightBtn.addEventListener('pointerdown', ()=>{ player.lane = Math.min(lanes-1, player.lane+1); });
+jumpBtn.addEventListener('pointerdown', ()=>{ if(player.onGround){ player.vy = player.jumpPower; player.onGround=false; } });
+
+// swipe detection
+let touchStartX = null;
+let touchStartY = null;
+document.addEventListener('pointerdown', (e)=>{
+  touchStartX = e.clientX;
+  touchStartY = e.clientY;
+});
+document.addEventListener('pointerup', (e)=>{
+  if(touchStartX === null) return;
+  const dx = e.clientX - touchStartX;
+  const dy = e.clientY - touchStartY;
+  if(Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30){
+    // horizontal swipe
+    if(dx > 0) player.lane = Math.min(lanes-1, player.lane+1);
+    else player.lane = Math.max(0, player.lane-1);
+  } else if(Math.abs(dy) > 30 && dy < 0){
+    // swipe up = jump
+    if(player.onGround){ player.vy = player.jumpPower; player.onGround=false; }
+  } else {
+    // tap => if not playing, start
+    if(!playing && !gameOver) startGame();
+  }
+  touchStartX = null;
+  touchStartY = null;
+});
+
+// Start / end
+function startGame(){
+  resetGame(); playing = true;
+  startOverlay.style.display = 'none';
+  gameOverOverlay.style.display = 'none';
+  touchControls.style.display = isMobile() ? 'flex' : 'none';
+  // initial player pos:
+  layout();
+}
+function endGame(){
+  playing = false;
+  gameOver = true;
+  goScore.textContent = 'Score: ' + score;
+  gameOverOverlay.style.display = 'flex';
+}
+
+// small autop layer for obstacle lane placement when spawn timer chosen
+(function spawnAdjust(){
+  // map lanes to x pos for spawn
+  setInterval(()=>{ for(let o of obstacles){ o.x -= 0; } }, 1000);
+})();
+
+// expose install prompt if supported
+let deferredPrompt;
+const installBtn = document.getElementById('installBtn');
+window.addEventListener('beforeinstallprompt', (e)=>{
+  e.preventDefault();
+  deferredPrompt = e;
+  installBtn.style.display = 'inline-block';
+});
+installBtn.addEventListener('click', async ()=>{
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const choice = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  installBtn.style.display = 'none';
+});
+
+// util
+function isMobile(){ return /Mobi|Android/i.test(navigator.userAgent); }
+
+// simple onboarding: automatic layout & start screen visible
+resetGame();
+startOverlay.style.display = 'flex';
+
+// naive collision improvement: ensure obstacles created at lane centers
+setInterval(()=>{
+  // adjust spawn x based on lane center
+  for(let o of obstacles){
+    o.x = Math.round(o.x);
+    o.y = groundY - o.h;
+    o.x = o.x; // noop
+  }
+},2000);
+
+</script>
+
+<!-- register service worker -->
+<script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{/* ignore */});
+}
+</script>
+</body>
+</html>
